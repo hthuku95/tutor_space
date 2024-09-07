@@ -16,3 +16,13 @@ def containers(request):
 
     return render(request, "containers/containers.html",context)
 
+@login_required()
+def images(request):
+    images = Image.objects.all()
+
+    context = {
+        'images':images
+    }
+
+    return render(request,"containers/images.html",context)
+
