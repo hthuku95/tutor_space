@@ -99,28 +99,41 @@ class ExecuteCodeView(APIView):
 
         try:
             image_id = self.get_or_create_image(language)
-            image = Image.objects.get(pk=image_id)  # Ensure the image exists with the primary key
+            image = Image.objects.get(pk=image_id)
 
             try:
                 container = UserContainer.objects.get(user_profile=user_profile)
-                container_data = {
-                    'container_id': container.container_id,
-                    'default_command': image.default_command  # Ensuring this is included
-                }
+                # Check if the container actually exists in Docker
+                try:
+                    docker_container = client.containers.get(container.container_id)
+                    # Update container info if necessary
+                    if docker_container.name != container.container_name:
+                        container.container_name = docker_container.name
+                        container.save()
+                    container_data = {
+                        'container_id': container.container_id,
+                        'container_name': container.container_name,
+                        'default_command': image.default_command
+                    }
+                    logger.info(f"Using existing container: {container.container_id}")
+                except docker.errors.NotFound:
+                    # Container doesn't exist in Docker, remove from DB and create a new one
+                    logger.warning(f"Container {container.container_id} not found in Docker. Removing from DB and creating a new one.")
+                    container.delete()
+                    raise UserContainer.DoesNotExist()
             except UserContainer.DoesNotExist:
-                # Here you handle the creation of a new container if it does not exist
-                command = image.default_command if image.default_command else "No command set"  # Fallback for missing command
+                # Create a new container
+                command = image.default_command if image.default_command else "No command set"
+                container_name = f"user_container_{user_profile.user.id}"
 
-                # Create the container in Docker
                 new_container = client.containers.create(
                     image=image.image_id,
-                    name=f"user_container_{user_profile.user.id}",
+                    name=container_name,
                     command=command,
                     detach=True,
                     tty=True
                 )
 
-                # Create the UserContainer object
                 with transaction.atomic():
                     container = UserContainer.objects.create(
                         user_profile=user_profile,
@@ -130,8 +143,10 @@ class ExecuteCodeView(APIView):
                     )
                 container_data = {
                     'container_id': container.container_id,
+                    'container_name': container.container_name,
                     'default_command': command
                 }
+                logger.info(f"Created new container: {container.container_id}")
 
             return container_data
 
@@ -151,35 +166,43 @@ class ExecuteCodeView(APIView):
         language_config = settings.LANGUAGE_DOCKER_IMAGES.get(language_for_execution)
 
         if not language_config:
-            raise ValueError("Unsupported programming language")
+            logger.error(f"Unsupported programming language: {language_for_execution}")
+            raise ValueError(f"Unsupported programming language: {language_for_execution}")
 
-        image_in_db = None  # Initialize image_in_db to ensure it's always defined
         try:
-            image_in_db = Image.objects.get(image_id=language_config['image'])
-            print(r"Using image:{image_in_db.image_id} from the DB ")
+            image_in_db = Image.objects.get(repository=language_config['repository'], tag=language_config['tag'])
+            # Check if the image actually exists in Docker
+            try:
+                docker_image = client.images.get(f"{image_in_db.repository}:{image_in_db.tag}")
+                # Update image info if necessary
+                if docker_image.id != image_in_db.image_id:
+                    image_in_db.image_id = docker_image.id
+                    image_in_db.save()
+                logger.info(f"Using existing image: {image_in_db.image_id}")
+            except docker.errors.ImageNotFound:
+                # Image doesn't exist in Docker, remove from DB and pull a new one
+                logger.warning(f"Image {image_in_db.image_id} not found in Docker. Removing from DB and pulling a new one.")
+                image_in_db.delete()
+                raise Image.DoesNotExist()
         except Image.DoesNotExist:
             try:
-                # Pulling the image if not found in DB
-                print(r"Pulling a new Image from Docker since it doesnt Exist")
-                image = client.images.pull(language_config['image'])
+                logger.info(f"Pulling a new Image from Docker for {language_config['repository']}:{language_config['tag']}")
+                docker_image = client.images.pull(language_config['repository'], tag=language_config['tag'])
                 image_in_db = Image.objects.create(
-                    image_id=image.id,
+                    image_id=docker_image.id,
                     repository=language_config['repository'],
                     tag=language_config['tag'],
                     language_for_execution=language_for_execution,
-                    execution_flags=language_config['execution_flags'],
+                    execution_flags=','.join(language_config['execution_flags']),
                     default_command=language_config['default_command']
                 )
+                logger.info(f"Created new image record: {image_in_db.image_id}")
+            except docker.errors.APIError as e:
+                logger.exception(f"Failed to pull Docker image: {str(e)}")
+                raise Exception(f"Failed to pull Docker image: {str(e)}")
             except Exception as e:
-                logger.exception("Failed to add image record to DB: {}".format(str(e)))
-                # Handle or re-raise the exception appropriately here
-                raise Exception("Failed to create image record due to an error.")
-        except docker.errors.ImageError as ie:
-            logger.exception("Docker Image Error: {}".format(str(ie)))
-            raise Exception("Docker Image Error occurred.")
-
-        if image_in_db is None:
-            raise Exception("Image could not be found or created.")
+                logger.exception(f"Failed to add image record to DB: {str(e)}")
+                raise Exception(f"Failed to create image record due to an error: {str(e)}")
 
         return image_in_db.image_id
 
