@@ -1,16 +1,12 @@
-from django.shortcuts import render,redirect
+from rest_framework.generics import RetrieveAPIView
 from .models import UserProfile
-from django.contrib import messages
+from .serializers import UserProfileSerializer
 from django.contrib.auth.decorators import login_required
+from rest_framework.permissions import IsAuthenticated
 
-# Create your views here.
-@login_required()
-def dashboard(request):
-    user_profile = UserProfile.objects.get(user=request.user)
+class DashboardView(RetrieveAPIView):
+    serializer_class = UserProfileSerializer
+    permission_classes = [IsAuthenticated]
 
-    context = {
-        'user_profile':user_profile
-    }
-
-    return render(request, "profiles/dashboard.html",context)
-
+    def get_object(self):
+        return self.request.user.userprofile

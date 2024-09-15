@@ -5,12 +5,18 @@ from django.contrib.staticfiles.urls import staticfiles_urlpatterns
 from django.conf.urls.static import static
 from django.conf import settings
 from . import views
+from rest_framework_simplejwt.views import (
+    TokenObtainPairView,
+    TokenRefreshView,
+)
 
 urlpatterns = [
     path('admin/', admin.site.urls),
     path(r'',views.index_view),
-    path(r'dashboard/',include('profiles.urls')),
-    path(r'containers/',include('containers.urls')),
+    path(r'api/dashboard/',include('profiles.urls')),
+    path(r'api/containers/',include('containers.urls')),
+    path(r'api/token/', TokenObtainPairView.as_view(), name='token_obtain_pair'),
+    path(r'api/token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
 ]
 
 #appending the static files urls to the above media

@@ -51,6 +51,47 @@ MIDDLEWARE = [
 
 ROOT_URLCONF = 'tutor_space.urls'
 
+LANGUAGE_DOCKER_IMAGES = {
+    'python': {
+        'image': 'python:3.9-slim',
+        'default_command': 'python',
+        'execution_flags': ['-c'],
+        'language_for_execution': 'python',
+        'repository': 'python',
+        'tag': '3.9-slim'
+    },
+    'node': {
+        'image': 'node:14-alpine',
+        'default_command': 'node',
+        'execution_flags': ['-e'],
+        'language_for_execution': 'node',
+        'repository': 'node',
+        'tag': '14-alpine'
+    },
+}
+
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+        },
+    },
+    'loggers': {
+        'django': {
+            'handlers': ['console'],
+            'level': 'INFO',
+        },
+        'containers': {
+            'handlers': ['console'],
+            'level': 'DEBUG',
+            'propagate': False,
+        },
+    },
+}
+
+
 TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
@@ -100,6 +141,16 @@ AUTH_PASSWORD_VALIDATORS = [
 ]
 
 
+REST_FRAMEWORK = {
+    'DEFAULT_PERMISSION_CLASSES': [
+        'rest_framework.permissions.IsAuthenticated',
+    ],
+    'DEFAULT_AUTHENTICATION_CLASSES': (
+        'rest_framework_simplejwt.authentication.JWTAuthentication', 
+    ),
+}
+
+
 # Internationalization
 # https://docs.djangoproject.com/en/5.1/topics/i18n/
 
@@ -145,3 +196,5 @@ ACCOUNT_EMAIL_VERIFICATION = 'none'
 # https://docs.djangoproject.com/en/5.1/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+
