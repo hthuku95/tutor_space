@@ -1,37 +1,45 @@
+
 import os
 import logging
-from typing import Dict, List
+import json
+import asyncio
+from typing import Dict, List, Optional, Any
 from pathlib import Path
-from jinja2 import Environment, FileSystemLoader
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
 from langchain_core.output_parsers import StrOutputParser
-
-from ..types import (
+from ...types import (
     ProjectConfig,
     ServiceConfig,
     ServiceType,
-    DeploymentType
+    DeploymentType,
+    ResourceRequirements
 )
+from ..protocols.agent_protocol import (
+    AgentProtocol,
+    CodeGenerationPriority,
+    ServiceRequest,
+    ServiceResponse,
+    CodeFile,
+    MessageType
+)
+from ...main_agent_four import programming_agent, handle_request  # Add this import
+from containers.utils import DockerClientManager
 
 logger = logging.getLogger(__name__)
 
 class ServiceGenerator:
-    """Generates service files and configurations for each service in a project"""
+    """
+    Generates service files and configurations for each service in a project
+    by coordinating with Agent 4 for actual code generation.
+    """
 
     def __init__(self, base_path: str):
         self.base_path = Path(base_path)
-        self.template_path = Path(__file__).parent / "templates"
         self.model = ChatOpenAI(model="gpt-4", temperature=0)
         self.parser = StrOutputParser()
-        
-        # Initialize Jinja2 environment for templates
-        self.jinja_env = Environment(
-            loader=FileSystemLoader(str(self.template_path)),
-            autoescape=True,
-            trim_blocks=True,
-            lstrip_blocks=True
-        )
+        self.protocol = AgentProtocol()
+        self.docker_manager = DockerClientManager()
 
     async def generate_service(
         self,
@@ -40,226 +48,280 @@ class ServiceGenerator:
         project_config: ProjectConfig
     ) -> Dict[str, str]:
         """
-        Generate all files for a specific service
-        
-        Args:
-            service_name: Name of the service
-            service_config: Service configuration
-            project_config: Complete project configuration
-            
-        Returns:
-            Dictionary mapping file paths to their contents
+        Generate all files and configurations for a service based on its requirements.
         """
-        logger.info(f"Generating service: {service_name}")
+        logger.info(f"Starting service generation for: {service_name}")
         
-        # Create service directory
-        service_path = self.base_path / service_name
-        service_path.mkdir(parents=True, exist_ok=True)
-        
-        # Generate files based on service type
-        files_dict = {}
-        
-        # Generate Dockerfile
-        dockerfile_content = await self._generate_dockerfile(service_config)
-        files_dict[str(service_path / "Dockerfile")] = dockerfile_content
-        
-        # Generate service-specific files
-        type_specific_files = await self._generate_type_specific_files(
-            service_name,
-            service_config,
-            project_config
-        )
-        files_dict.update(type_specific_files)
-        
-        # Generate configuration files
-        config_files = await self._generate_config_files(
-            service_name,
-            service_config,
-            project_config
-        )
-        files_dict.update(config_files)
-        
-        return files_dict
+        try:
+            # Create service directory
+            service_path = self.base_path / service_name
+            service_path.mkdir(parents=True, exist_ok=True)
 
-    async def _generate_dockerfile(self, service_config: ServiceConfig) -> str:
-        """Generate Dockerfile for a service"""
-        dockerfile_prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are a Docker expert. Create a Dockerfile that follows best practices:
-            - Use multi-stage builds when appropriate
-            - Include security considerations
-            - Optimize for build time and image size
-            - Set up proper permissions
-            - Configure healthchecks
-            Do not include comments or explanations."""),
-            ("human", """Generate a Dockerfile for:
-            Base Image: {base_image}
-            Service Type: {service_type}
-            Environment: {environment}
-            Ports: {ports}
-            Command: {command}""")
-        ])
-        
-        chain = dockerfile_prompt | self.model | self.parser
-        
-        dockerfile = await chain.ainvoke({
-            "base_image": service_config.base_image,
-            "service_type": service_config.type.value,
-            "environment": service_config.environment,
-            "ports": service_config.ports,
-            "command": service_config.command
-        })
-        
-        return dockerfile
-
-    async def _generate_type_specific_files(
-        self,
-        service_name: str,
-        service_config: ServiceConfig,
-        project_config: ProjectConfig
-    ) -> Dict[str, str]:
-        """Generate files specific to service type"""
-        generator_map = {
-            ServiceType.FRONTEND: self._generate_frontend_files,
-            ServiceType.BACKEND: self._generate_backend_files,
-            ServiceType.DATABASE: self._generate_database_files,
-            ServiceType.CACHE: self._generate_cache_files,
-            ServiceType.MESSAGE_QUEUE: self._generate_queue_files,
-        }
-        
-        generator = generator_map.get(service_config.type)
-        if generator:
-            return await generator(service_name, service_config, project_config)
-        
-        return {}
-
-    async def _generate_frontend_files(
-        self,
-        service_name: str,
-        service_config: ServiceConfig,
-        project_config: ProjectConfig
-    ) -> Dict[str, str]:
-        """Generate frontend-specific files"""
-        files = {}
-        service_path = self.base_path / service_name
-        
-        # Generate package.json
-        package_json = await self._generate_package_json(service_config)
-        files[str(service_path / "package.json")] = package_json
-        
-        # Generate main application file
-        app_content = await self._generate_frontend_app(service_config, project_config)
-        files[str(service_path / "src" / "App.js")] = app_content
-        
-        # Generate component files
-        components = await self._generate_frontend_components(service_config)
-        for name, content in components.items():
-            files[str(service_path / "src" / "components" / f"{name}.js")] = content
-        
-        # Generate configuration files
-        files[str(service_path / ".env")] = self._generate_env_file(service_config)
-        files[str(service_path / ".env.production")] = self._generate_env_file(
-            service_config,
-            DeploymentType.PRODUCTION
-        )
-        
-        return files
-
-    async def _generate_backend_files(
-        self,
-        service_name: str,
-        service_config: ServiceConfig,
-        project_config: ProjectConfig
-    ) -> Dict[str, str]:
-        """Generate backend-specific files"""
-        files = {}
-        service_path = self.base_path / service_name
-        
-        # Generate main application file
-        app_content = await self._generate_backend_app(service_config, project_config)
-        main_file = "app.py" if "python" in service_config.base_image.lower() else "index.js"
-        files[str(service_path / main_file)] = app_content
-        
-        # Generate API routes
-        api_routes = await self._generate_api_routes(service_config)
-        api_dir = service_path / "routes"
-        for name, content in api_routes.items():
-            files[str(api_dir / name)] = content
-        
-        # Generate database models/schemas
-        models = await self._generate_models(service_config)
-        models_dir = service_path / "models"
-        for name, content in models.items():
-            files[str(models_dir / name)] = content
-        
-        # Generate configuration files
-        files[str(service_path / "config.py")] = await self._generate_backend_config(
-            service_config,
-            project_config
-        )
-        
-        return files
-
-    async def _generate_database_files(
-        self,
-        service_name: str,
-        service_config: ServiceConfig,
-        project_config: ProjectConfig
-    ) -> Dict[str, str]:
-        """Generate database-specific files"""
-        files = {}
-        service_path = self.base_path / service_name
-        
-        # Generate initialization scripts
-        init_scripts = await self._generate_db_init_scripts(service_config)
-        scripts_dir = service_path / "init"
-        for name, content in init_scripts.items():
-            files[str(scripts_dir / name)] = content
-        
-        # Generate configuration files
-        files[str(service_path / "my.cnf")] = await self._generate_db_config(service_config)
-        
-        return files
-
-    async def _generate_config_files(
-        self,
-        service_name: str,
-        service_config: ServiceConfig,
-        project_config: ProjectConfig
-    ) -> Dict[str, str]:
-        """Generate common configuration files"""
-        files = {}
-        service_path = self.base_path / service_name
-        
-        # Generate environment variables
-        files[str(service_path / ".env")] = self._generate_env_file(service_config)
-        
-        # Generate service-specific configs
-        if service_config.type == ServiceType.FRONTEND:
-            files[str(service_path / "nginx.conf")] = await self._generate_nginx_config(
-                service_config
+            # Step 1: Analyze requirements and create comprehensive specification
+            service_spec = await self._analyze_service_requirements(
+                service_name,
+                service_config,
+                project_config
             )
-        
-        # Generate health check script if needed
-        if service_config.health_check:
-            files[str(service_path / "healthcheck.sh")] = self._generate_healthcheck(
-                service_config.health_check
+
+            # Step 2: Request code generation from Agent 4
+            generated_code = await self._request_code_generation(service_spec)
+
+            # Step 3: Generate all infrastructure and configuration
+            generated_configs = await self._generate_configurations(
+                service_name,
+                service_config,
+                project_config,
+                service_spec
             )
-        
-        return files
 
-    def _generate_env_file(
+            # Combine all generated content
+            generated_files = {**generated_code, **generated_configs}
+
+            # Step 4: Validate entire service
+            validation_result = await self._validate_service(
+                generated_files,
+                service_spec
+            )
+
+            if not validation_result["is_valid"]:
+                logger.error(f"Service validation failed: {validation_result['errors']}")
+                raise ValueError(
+                    f"Service validation failed: {validation_result['errors']}"
+                )
+
+            return generated_files
+
+        except Exception as e:
+            logger.error(f"Error generating service {service_name}: {str(e)}")
+            raise
+
+    async def _analyze_service_requirements(
         self,
+        service_name: str,
         service_config: ServiceConfig,
-        deployment_type: DeploymentType = DeploymentType.DEVELOPMENT
-    ) -> str:
-        """Generate environment file content"""
-        env_template = self.jinja_env.get_template(f"env/{deployment_type.value}.env.j2")
-        return env_template.render(
-            service_config=service_config,
-            deployment_type=deployment_type
-        )
+        project_config: ProjectConfig
+    ) -> Dict[str, Any]:
+        """
+        Analyze service requirements to create a comprehensive specification.
+        """
+        try:
+            prompt = ChatPromptTemplate.from_messages([
+                ("system", """Analyze the service requirements and create a comprehensive specification that:
+                1. Identifies all required components and their relationships
+                2. Determines necessary configurations and infrastructure
+                3. Specifies integration points and dependencies
+                4. Defines security, monitoring, and operational requirements
+                5. Outlines testing and validation criteria
 
-    def _generate_healthcheck(self, health_check_config: Dict) -> str:
-        """Generate health check script"""
-        healthcheck_template = self.jinja_env.get_template("healthcheck.sh.j2")
-        return healthcheck_template.render(config=health_check_config)
+                The specification should be:
+                - Completely requirement-driven
+                - Technology and tool agnostic
+                - Implementation independent
+                - Focused on capabilities and needs
+                
+                Do not make assumptions about specific:
+                - Programming languages
+                - Frameworks
+                - Infrastructure tools
+                - Deployment platforms"""),
+                ("human", """Create a comprehensive service specification for:
+                Service Name: {service_name}
+                Service Configuration: {service_config}
+                Project Configuration: {project_config}
+                
+                Return a detailed specification that can guide both code and infrastructure generation.""")
+            ])
+
+            chain = prompt | self.model | self.parser
+
+            spec_str = await chain.ainvoke({
+                "service_name": service_name,
+                "service_config": service_config.dict(),
+                "project_config": project_config.dict()
+            })
+            
+            return json.loads(spec_str)
+
+        except Exception as e:
+            logger.error(f"Error analyzing service requirements: {str(e)}")
+            raise
+
+    async def _request_code_generation(self, service_spec: Dict[str, Any]) -> Dict[str, str]:
+        """
+        Request code generation from Agent 4 based on service specification.
+        """
+        try:
+            # Create service request
+            request = self.protocol.create_service_request(
+                service_spec=service_spec,
+                priority=CodeGenerationPriority.HIGH,
+                requirements={
+                    "optimization_targets": service_spec.get("optimization_targets", []),
+                    "quality_requirements": service_spec.get("quality_requirements", {}),
+                    "constraints": service_spec.get("constraints", {})
+                }
+            )
+            
+            if not self.protocol.validate_request(request):
+                raise ValueError("Invalid service request")
+            
+            # Send to Agent 4
+            response = await self._send_to_agent_4(request)
+            
+            if not self.protocol.validate_response(response):
+                raise ValueError("Invalid response from Agent 4")
+            
+            return {
+                file.path: file.content 
+                for file in response.files
+            }
+
+        except Exception as e:
+            logger.error(f"Error in code generation request: {str(e)}")
+            raise
+
+    async def _generate_configurations(
+        self,
+        service_name: str,
+        service_config: ServiceConfig,
+        project_config: ProjectConfig,
+        service_spec: Dict[str, Any]
+    ) -> Dict[str, str]:
+        """
+        Generate all configurations based on service requirements.
+        This consolidated method handles all types of configurations:
+        - Infrastructure (any required infrastructure tools)
+        - Environment configurations
+        - Security configurations
+        - Monitoring and logging
+        - Deployment configurations
+        - CI/CD configurations
+        """
+        try:
+            prompt = ChatPromptTemplate.from_messages([
+                ("system", """Generate comprehensive configurations that fulfill all service requirements.
+                Include configurations for any necessary:
+                1. Infrastructure and deployment
+                2. Service runtime environments
+                3. Security measures and policies
+                4. Monitoring, logging, and observability
+                5. Scaling and performance
+                6. Integration and communication
+                7. Development and testing
+                8. CI/CD and automation
+                
+                Important Guidelines:
+                - Generate configurations based solely on requirements
+                - Don't assume specific tools or platforms
+                - Include all necessary components
+                - Ensure configurations work together
+                - Consider security and scalability
+                - Enable observability and maintenance
+                
+                Return configurations in appropriate formats based on their purpose."""),
+                ("human", """Generate all required configurations for:
+                Service Name: {service_name}
+                Service Specification: {service_spec}
+                Service Configuration: {service_config}
+                Project Configuration: {project_config}
+                
+                Return a dictionary mapping file paths to their contents.""")
+            ])
+
+            chain = prompt | self.model | self.parser
+
+            configs = await chain.ainvoke({
+                "service_name": service_name,
+                "service_spec": service_spec,
+                "service_config": service_config.dict(),
+                "project_config": project_config.dict()
+            })
+            
+            return json.loads(configs)
+
+        except Exception as e:
+            logger.error(f"Error generating configurations: {str(e)}")
+            raise
+
+    async def _validate_service(
+        self,
+        generated_files: Dict[str, str],
+        service_spec: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Validate the complete service including all generated files and configurations.
+        """
+        try:
+            # Create validation request for Agent 4
+            request = self.protocol.create_service_request(
+                service_spec=service_spec,
+                message_type=MessageType.CONFIG_REQUEST,
+                files=generated_files,
+                requirements={
+                    "validation_criteria": service_spec.get("validation_criteria", {}),
+                    "quality_requirements": service_spec.get("quality_requirements", {}),
+                    "compliance_requirements": service_spec.get("compliance_requirements", {})
+                }
+            )
+            
+            # Get validation results from Agent 4
+            response = await self._send_to_agent_4(request)
+            
+            return {
+                "is_valid": response.status == "valid",
+                "errors": response.warnings,
+                "validation_details": response.additional_info,
+                "suggested_improvements": response.additional_info.get("improvements", [])
+            }
+
+        except Exception as e:
+            logger.error(f"Error validating service: {str(e)}")
+            raise
+
+    async def _send_to_agent_4(self, request: ServiceRequest) -> ServiceResponse:
+        """
+        Send request to Agent 4 and await response.
+        Implements the communication protocol between ServiceGenerator and Agent 4.
+        """
+        try:
+            # Send request to Agent 4
+            response = await handle_request(request)
+            
+            if isinstance(response, dict) and response.get("status") == "queued":
+                # Request was queued, wait for completion
+                return await self._wait_for_agent4_completion(request.request_id)
+            else:
+                # Direct response
+                return response
+                
+        except Exception as e:
+            logger.error(f"Error communicating with Agent 4: {str(e)}")
+            raise
+
+    async def _wait_for_agent4_completion(self, request_id: str) -> ServiceResponse:
+        """
+        Wait for Agent 4 to complete processing a queued request.
+        Implements polling with exponential backoff.
+        """
+        max_attempts = 10
+        base_delay = 1  # seconds
+        
+        for attempt in range(max_attempts):
+            try:
+                # Check if task is complete
+                if request_id in programming_agent.ongoing_tasks:
+                    task = programming_agent.ongoing_tasks[request_id]
+                    if task.done():
+                        return await task
+                
+                # Calculate next delay with exponential backoff
+                delay = base_delay * (2 ** attempt)
+                await asyncio.sleep(delay)
+                
+            except Exception as e:
+                logger.error(f"Error waiting for Agent 4 completion: {str(e)}")
+                raise
+                
+        raise TimeoutError(f"Request {request_id} timed out waiting for Agent 4")
+
