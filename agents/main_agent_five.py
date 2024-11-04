@@ -277,10 +277,11 @@ def regenerate_content(original_content: str, analysis_result: dict, question: s
 
         Please rewrite this part of the content, addressing these issues. Ensure the following:
         1. Maintain academic tone throughout.
-        2. Include proper citations where needed.
+        2. Include proper citations where needed (Atleast one in two paragraphs).
         3. Avoid repetitions and redundancies.
         4. Maintain coherence and logical flow.
         5. Ensure this part flows well with the other parts of the paper.
+        6. Avoid Generalizing Concepts 
 
         If this is the last chunk, ensure a strong conclusion that summarizes key points.
 
