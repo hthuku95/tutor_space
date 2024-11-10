@@ -35,6 +35,7 @@ from .projects.protocols.agent_protocol import (
 
 from containers.utils import DockerClientManager
 
+
 logger = logging.getLogger(__name__)
 
 class ValidationError(Exception):
@@ -50,6 +51,7 @@ class ValidationError(Exception):
         self.field = field
         self.details = details or {}
         self.message = self._format_message(message)
+        self.docker_manager = DockerClientManager()
         
         super().__init__(self.message)
 
@@ -1275,24 +1277,28 @@ class PlanningAgent:
         execution_plan: Dict[str, Any],
         assignment_dir: Path
     ) -> Dict[str, Any]:
-        """Handle programming task through Agent 4"""
+        """
+        Handle programming task through Agent 4.
+        Includes code generation, Docker containerization, and validation.
+        """
+        container_ids = []
         try:
             # Create request for Agent 4
-            logger.info("Preparing request for Agent 4")
+            logger.info(f"Creating request for Agent 4 for assignment {assignment.id}")
             service_request = await self._create_programming_request(
                 assignment,
                 execution_plan
             )
 
-            # Send to Agent 4
-            logger.info("Sending request to Agent 4")
-            result = await handle_programming_request(service_request)
+            # Send to Agent 4 for code generation
+            logger.info("Sending request to Agent 4 for code generation")
+            agent4_result = await handle_programming_request(service_request)
 
-            # Validate result
+            # Validate Agent 4 result
             logger.info("Validating Agent 4 response")
-            if not await self._validate_programming_result(result):
+            if not await self._validate_programming_result(agent4_result):
                 raise ExecutionError(
-                    "Invalid programming task result",
+                    "Invalid programming task result from Agent 4",
                     task_type="programming",
                     stage="validation"
                 )
@@ -1300,32 +1306,99 @@ class PlanningAgent:
             # Process generated files
             logger.info("Processing generated files")
             processed_files = await self._process_programming_files(
-                result["files"],
+                agent4_result["files"],
                 assignment_dir
             )
 
-            # Create submission
-            logger.info("Creating submission")
+            # Handle Docker containerization
+            logger.info("Setting up Docker container")
+            container_info = await self._handle_container_operations(
+                assignment,
+                agent4_result["files"],
+                execution_plan
+            )
+            if container_info['container']['id']:
+                container_ids.append(container_info['container']['id'])
+
+            # Validate container setup
+            logger.info("Validating container setup")
+            if not await self._validate_container(
+                container_info['container']['id'],
+                execution_plan.get('validation_criteria', {})
+            ):
+                raise ExecutionError(
+                    "Container validation failed",
+                    task_type="programming",
+                    stage="container_validation"
+                )
+
+            # Create assignment submission
+            logger.info("Creating assignment submission")
             submission = await self._create_submission(
                 assignment,
-                result,
+                {
+                    **agent4_result,
+                    "container_info": container_info
+                },
                 "programming",
                 processed_files
             )
 
-            return {
+            # Prepare final result
+            result = {
                 "status": "completed",
                 "submission_id": submission.id,
-                "files": processed_files
+                "files": processed_files,
+                "container_info": {
+                    "image_id": container_info['image']['id'],
+                    "image_tag": container_info['image']['tag'],
+                    "container_id": container_info['container']['id'],
+                    "port_mappings": container_info['container'].get('port_mappings', {}),
+                    "access_urls": self._generate_access_urls(
+                        container_info['container'].get('port_mappings', {})
+                    ),
+                    "container_status": container_info['container'].get('status')
+                },
+                "validation_results": agent4_result.get("validation_results", {}),
+                "execution_metrics": {
+                    "generation_time": agent4_result.get("generation_time"),
+                    "build_time": container_info.get("build_time"),
+                    "total_time": container_info.get("total_time")
+                }
             }
 
+            logger.info(f"Successfully completed programming task for assignment {assignment.id}")
+            return result
+
+        except ExecutionError:
+            raise
         except Exception as e:
-            logger.error(f"Error in programming task: {str(e)}")
+            error_msg = f"Error in programming task: {str(e)}"
+            logger.error(error_msg)
             raise ExecutionError(
-                f"Programming task failed: {str(e)}",
+                error_msg,
                 task_type="programming",
                 stage="execution"
             )
+        finally:
+            # Cleanup containers if any were created
+            if container_ids:
+                logger.info(f"Cleaning up containers: {container_ids}")
+                await self._cleanup_containers(
+                    assignment.id,
+                    container_ids
+                )
+
+        def _generate_access_urls(
+            self,
+            port_mappings: Dict[str, str]
+        ) -> Dict[str, str]:
+            """Generate access URLs for mapped ports"""
+            base_url = settings.DOCKER_HOST or 'localhost'
+            return {
+                f"port_{container_port}": f"http://{base_url}:{host_port}"
+                for container_port, host_port in port_mappings.items()
+            }
 
     async def _handle_academic_writing(
         self,
@@ -1691,34 +1764,50 @@ class PlanningAgent:
             )
     
     async def _determine_base_image(self, description: str) -> Dict[str, Any]:
-        """Determine appropriate base image based on project description"""
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are a Docker expert. Analyze the project description 
-            and determine the appropriate Docker base image requirements. 
-            The response must be language/technology agnostic and based solely 
-            on the project requirements.
-            
-            Return a JSON with:
-            {
-                "language": "detected programming language",
-                "version": "recommended version",
-                "framework": "detected framework if any",
-                "build_tools": ["required build tools"],
-                "runtime_requirements": ["specific runtime needs"]
-            }"""),
-            ("human", "Analyze this project description and determine Docker image requirements: {description}")
-        ])
-
+        """
+        Analyze project description to determine appropriate Docker base image.
+        Uses LLM to understand requirements and suggest appropriate configuration.
+        """
         try:
+            prompt = ChatPromptTemplate.from_messages([
+                ("system", """As a Docker expert, analyze this project description and determine the base image requirements.
+                Consider:
+                1. Programming language and runtime environment
+                2. Required system dependencies
+                3. Required build tools
+                4. Security considerations
+                5. Any specialized requirements
+                
+                Return a JSON with:
+                {
+                    "base_image": {
+                        "name": "base image to use",
+                        "tag": "specific version tag"
+                    },
+                    "system_dependencies": ["required packages"],
+                    "build_stage_dependencies": ["build-time dependencies"],
+                    "runtime_dependencies": ["runtime dependencies"],
+                    "build_args": {
+                        "arg_name": "arg_value"
+                    }
+                }"""),
+                ("human", "Project Description: {description}")
+            ])
+
             result = await (prompt | self.model | self.parser).ainvoke({
                 "description": description
             })
-            
-            # Validate result has required fields
-            required_fields = ["language", "version", "framework", "build_tools", "runtime_requirements"]
+
+            # Validate result structure
+            required_fields = ["base_image", "system_dependencies", "build_stage_dependencies"]
             if not all(field in result for field in required_fields):
-                raise ValidationError("Missing required fields in base image determination")
-                
+                raise ValidationError(
+                    "Incomplete Docker configuration",
+                    validation_type="docker",
+                    field="base_image",
+                    details={"missing_fields": [f for f in required_fields if f not in result]}
+                )
+
             return result
 
         except Exception as e:
@@ -1729,16 +1818,18 @@ class PlanningAgent:
         self,
         execution_plan: Dict[str, Any]
     ) -> Dict[str, str]:
-        """Extract required environment variables from execution plan"""
+        """
+        Extract and validate environment variables from execution plan.
+        """
         try:
             env_vars = {}
             
-            # Extract environment variables from execution steps
+            # Extract explicit environment variables from steps
             for step in execution_plan.get("steps", []):
                 if "environment" in step:
                     env_vars.update(step["environment"])
-            
-            # Extract from requirements section
+
+            # Extract environment requirements from service configurations
             if "environment_requirements" in execution_plan:
                 env_vars.update(execution_plan["environment_requirements"])
 
@@ -1750,21 +1841,22 @@ class PlanningAgent:
 
     async def _determine_network_requirements(
         self,
-        execution_plan: Dict[str, Any],
-        project_requirements: Dict[str, Any]
+        execution_plan: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Determine networking requirements for the container"""
+        """
+        Analyze execution plan to determine network requirements.
+        Handles service discovery, port mappings, and network configurations.
+        """
         try:
-            # Create network configuration template
             network_config = {
                 "exposed_ports": [],
                 "internal_ports": [],
-                "required_networks": [],
+                "networks": [],
                 "network_mode": "bridge",
                 "port_mappings": {}
             }
 
-            # Analyze service definitions from execution plan
+            # Analyze services for networking needs
             for step in execution_plan.get("steps", []):
                 if "service" in step:
                     service = step["service"]
@@ -1773,13 +1865,6 @@ class PlanningAgent:
                             service["networking"],
                             network_config
                         )
-
-            # Analyze project requirements for additional network needs
-            if "network_requirements" in project_requirements:
-                network_config = self._process_project_networking(
-                    project_requirements["network_requirements"],
-                    network_config
-                )
 
             return network_config
 
@@ -1792,7 +1877,7 @@ class PlanningAgent:
         service_networking: Dict[str, Any],
         network_config: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Process service-specific networking requirements"""
+        """Process networking requirements for a specific service"""
         if "ports" in service_networking:
             for port_config in service_networking["ports"]:
                 port_info = {
@@ -1825,6 +1910,131 @@ class PlanningAgent:
             network_config["network_mode"] = project_networking["network_mode"]
 
         return network_config
+    
+    async def _handle_container_operations(
+        self,
+        assignment: Assignment,
+        generated_files: Dict[str, str],
+        execution_plan: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Handle Docker container operations for programming assignments.
+        Creates and manages containers based on execution requirements.
+        """
+        try:
+            # Get Docker configuration
+            docker_config = {
+                "base_image": await self._determine_base_image(assignment.description),
+                "env_vars": await self._extract_env_requirements(execution_plan),
+                "network": await self._determine_network_requirements(execution_plan)
+            }
+
+            # Build container using DockerClientManager
+            image_info = await self.docker_manager.build_image(
+                context_path=str(self.submission_base_path / f"assignment_{assignment.id}"),
+                tag=f"assignment_{assignment.id}:latest",
+                build_args=docker_config["base_image"].get("build_args", {})
+            )
+
+            # Configure container
+            container_info = await self.docker_manager.create_container(
+                image_id=image_info['image_id'],
+                container_name=f"assignment_{assignment.id}",
+                env_vars=docker_config["env_vars"],
+                network_config=docker_config["network"]
+            )
+
+            return {
+                "image": image_info,
+                "container": container_info,
+                "config": docker_config
+            }
+
+        except Exception as e:
+            logger.error(f"Error in container operations: {str(e)}")
+            raise
+
+    async def _validate_container(
+        self,
+        container_id: str,
+        validation_criteria: Dict[str, Any]
+    ) -> bool:
+        """
+        Validate container meets requirements
+        """
+        try:
+            # Get container status
+            container_status = await self.docker_manager.get_container_status(container_id)
+            
+            # Check if container is running
+            if container_status.get('State', {}).get('Status') != 'running':
+                logger.error(f"Container {container_id} is not running")
+                return False
+
+            # Check port mappings
+            port_mappings = container_status.get('NetworkSettings', {}).get('Ports', {})
+            if not port_mappings:
+                logger.error(f"No port mappings found for container {container_id}")
+                return False
+
+            # Validate exposed services are accessible
+            for port_info in validation_criteria.get('required_ports', []):
+                if not await self._check_port_accessibility(
+                    container_id,
+                    port_info['port'],
+                    port_info.get('protocol', 'tcp')
+                ):
+                    return False
+
+            return True
+
+        except Exception as e:
+            logger.error(f"Error validating container: {str(e)}")
+            return False
+
+    async def _check_port_accessibility(
+        self,
+        container_id: str,
+        port: int,
+        protocol: str = 'tcp'
+    ) -> bool:
+        """
+        Check if a port is accessible on the container
+        """
+        try:
+            port_info = await self.docker_manager.check_port(
+                container_id,
+                port,
+                protocol
+            )
+            return port_info.get('accessible', False)
+
+        except Exception as e:
+            logger.error(f"Error checking port accessibility: {str(e)}")
+            return False
+
+    async def _cleanup_containers(
+        self,
+        assignment_id: int,
+        container_ids: List[str]
+    ) -> None:
+        """
+        Clean up containers after assignment completion or failure
+        """
+        try:
+            for container_id in container_ids:
+                try:
+                    await self.docker_manager.remove_container(
+                        container_id,
+                        force=True
+                    )
+                except Exception as container_e:
+                    logger.error(
+                        f"Error removing container {container_id}: {str(container_e)}"
+                    )
+
+        except Exception as e:
+            logger.error(f"Error in container cleanup: {str(e)}")
 
 # Global instance of the Planning Agent
 _planning_agent: Optional[PlanningAgent] = None
