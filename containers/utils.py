@@ -2,7 +2,7 @@ import os
 import asyncio
 import logging
 import docker
-from typing import Dict, List, Optional, AsyncIterator
+from typing import Dict, List, Optional, AsyncIterator, Any
 from docker.errors import DockerException
 from contextlib import asynccontextmanager
 import aiodocker
@@ -182,7 +182,7 @@ class DockerClientManager:
 
     async def wait_for_container(
         self,
-        container: aiodocker.containers.Container,
+        container: Any,
         healthcheck: Dict,
         timeout: int = 30
     ) -> bool:
@@ -227,7 +227,7 @@ class DockerClientManager:
 
     async def get_container_info(
         self,
-        container: aiodocker.containers.Container
+        container: Any
     ) -> Dict:
         """Get container information"""
         try:
@@ -248,7 +248,7 @@ class DockerClientManager:
 
     async def _get_container_stats(
         self,
-        container: aiodocker.containers.Container
+        container: Any
     ) -> Dict:
         """Get container resource usage statistics"""
         try:
@@ -263,7 +263,7 @@ class DockerClientManager:
             logger.error(f"Error getting container stats: {str(e)}")
             return {}
 
-    async def _cleanup_container(self, container: aiodocker.containers.Container) -> None:
+    async def _cleanup_container(self, container: Any) -> None:
         """Clean up a container"""
         try:
             await container.stop()

@@ -13,7 +13,7 @@ from typing import Dict, List, Any
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
-from .projects.protocols.agent_protocol import (
+from .protocols.agent_protocol import (
     AgentProtocol,
     ServiceRequest,
     ServiceResponse,

@@ -1,5 +1,12 @@
 from django.db import models
-from profiles.models import UserProfile 
+from profiles.models import UserProfile
+from django.utils import timezone
+from datetime import datetime, timedelta
+from decimal import Decimal
+import logging
+from typing import Dict, Any, Tuple
+
+logger = logging.getLogger(__name__)
 
 
 class OriginalPlatform(models.Model):
@@ -79,6 +86,109 @@ class Assignment(models.Model):
         expected_time = self.timestamp + time_delta * 0.6
         return expected_time
 
+    @property
+    def can_deliver(self) -> bool:
+        """Check if assignment can be delivered based on 60% rule"""
+        try:
+            now = timezone.now()
+            return now >= self.expected_delivery_time
+
+        except Exception as e:
+            logger.error(f"Error checking delivery status: {str(e)}")
+            return False
+
+    def can_access_submission(self, user=None) -> bool:
+        """
+        Check if submission can be accessed.
+        Args:
+            user: User requesting access
+        Returns:
+            bool: Whether user can access submission
+        """
+        try:
+            # First check if assignment is completed
+            if not self.completed:
+                return False
+
+            # Check if user is the assigned agent
+            if user and self.agent.user == user:
+                return True
+
+            # If not the assigned agent, check 60% rule and revisions
+            return self.can_deliver or self.has_revisions
+
+        except Exception as e:
+            logger.error(f"Error checking submission access: {str(e)}")
+            return False
+
+    @property
+    def delivery_status(self) -> Dict[str, Any]:
+        """Get comprehensive delivery status"""
+        try:
+            now = timezone.now()
+            hours_remaining = (self.expected_delivery_time - now).total_seconds() / 3600
+            
+            if self.completed:
+                status = "completed"
+                message = "Assignment is completed"
+            elif self.can_deliver:
+                status = "ready"
+                message = "Assignment can be delivered"
+            else:
+                status = "waiting"
+                message = (
+                    f"Assignment delivery available in "
+                    f"{round(hours_remaining, 1)} hours"
+                )
+
+            return {
+                "status": status,
+                "message": message,
+                "delivery_date": self.expected_delivery_time.isoformat(),
+                "hours_remaining": max(0, round(hours_remaining, 1)),
+                "can_deliver": self.can_deliver
+            }
+
+        except Exception as e:
+            logger.error(f"Error getting delivery status: {str(e)}")
+            return {
+                "status": "error",
+                "message": str(e),
+                "can_deliver": False
+            }
+
+    def validate_delivery(self, user=None) -> Tuple[bool, str]:
+        """
+        Validate if assignment can be delivered
+        Args:
+            user: User attempting delivery
+        Returns:
+            Tuple[bool, str]: (can_deliver, message)
+        """
+        try:
+            if not self.completed:
+                return False, "Assignment is not completed"
+
+            if not self.has_deposit_been_paid:
+                return False, "Deposit has not been paid"
+                
+            if not self.can_deliver:
+                now = timezone.now()
+                hours_remaining = (self.expected_delivery_time - now).total_seconds() / 3600
+                return False, (
+                    f"Cannot deliver yet. Available in "
+                    f"{round(hours_remaining, 1)} hours"
+                )
+
+            # Check if user is authorized
+            if user and self.agent.user != user:
+                return False, "Not authorized to deliver this assignment"
+
+            return True, "Assignment can be delivered"
+
+        except Exception as e:
+            logger.error(f"Error validating delivery: {str(e)}")
+            return False, str(e)
 
 class AssignmentFile(models.Model):
     assignment = models.ForeignKey(Assignment, on_delete=models.CASCADE, related_name='assignment_files')

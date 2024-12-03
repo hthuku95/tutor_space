@@ -7,7 +7,6 @@ from .models import UserContainer, Image, Project
 from .serializers import UserContainerSerializer, ImageSerializer, ProjectSerializer
 from profiles.models import UserProfile
 from agents.technology_validator import TechnologyValidator
-from agents.project_analyzer import ProjectAnalyzer
 from langchain_core.prompts import ChatPromptTemplate
 import docker
 import logging
@@ -22,6 +21,7 @@ from typing import Dict, List
 from django.http import HttpRequest
 import os
 from .utils import DockerClientManager
+from agents.project_analyzer import ProjectArchitecture, ProjectAnalyzer
 
 # Set up logging
 logging.getLogger('docker').setLevel(logging.DEBUG)

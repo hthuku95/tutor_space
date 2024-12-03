@@ -28,7 +28,7 @@ from langchain_openai import OpenAIEmbeddings
 from .main_agent_four import handle_request as handle_programming_request
 from .main_agent_five import academic_writing_pipeline
 
-from .projects.protocols.agent_protocol import (
+from .protocols.agent_protocol import (
     ServiceRequest,
     MessageType
 )

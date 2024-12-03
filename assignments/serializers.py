@@ -13,6 +13,7 @@ from .models import (
     Revision,
     SearchTagPairs,
 )
+from profiles.serializers import UserProfileSerializer
 
 class OriginalPlatformSerializer(serializers.ModelSerializer):
     class Meta:
@@ -76,17 +77,34 @@ class RevisionSerializer(serializers.ModelSerializer):
 
 
 class AssignmentSerializer(serializers.ModelSerializer):
-    agent = serializers.StringRelatedField()
-    original_platform = OriginalPlatformSerializer()
-    original_account = FreelancingAccountSerializer()
-    assignment_files = AssignmentFileSerializer(many=True)
-    assignment_submissions = AssignmentSubmissionSerializer(many=True)
-    revisions = RevisionSerializer(many=True)
+    agent = UserProfileSerializer(read_only=True)
+    delivery_status = serializers.DictField(read_only=True)
+    can_deliver = serializers.BooleanField(read_only=True)
+    expected_delivery_time = serializers.DateTimeField(read_only=True)
+
+    def get_can_access_submission(self, obj):
+        request = self.context.get('request')
+        if request and request.user:
+            return obj.can_access_submission(request.user)
+        return False
 
     class Meta:
         model = Assignment
-        fields = '__all__'
-
+        fields = [
+            'id',
+            'agent',
+            'subject',
+            'description',
+            'assignment_type',
+            'completed',
+            'has_revisions',
+            'has_deposit_been_paid',
+            'completion_deadline',
+            'expected_delivery_time',
+            'delivery_status',
+            'can_deliver',
+            'can_access_submission'
+        ]
 
 class MessageSerializer(serializers.ModelSerializer):
     attachments = AttachmentSerializer()

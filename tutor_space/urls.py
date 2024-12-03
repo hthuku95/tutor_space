@@ -24,3 +24,14 @@ urlpatterns = [
 #appending the static files urls to the above media
 urlpatterns += staticfiles_urlpatterns()
 #how to upload media..appending the media url to the patterns above
+
+from django.urls import get_resolver
+
+def list_urls():
+    urls = get_resolver().reverse_dict
+    for url in urls:
+        if isinstance(url, str):
+            print(url)
+
+print("Available URLs:")
+list_urls()

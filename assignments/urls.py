@@ -24,6 +24,7 @@ from .views import (
     RevisionDetailView,
     SearchTagPairsListView,
     TriggerBiddingView,
+     MessageImprovementView,
 )
 
 urlpatterns = [
@@ -63,4 +64,20 @@ urlpatterns = [
 
     path('revisions/', RevisionListView.as_view(), name='revision-list'),
     path('revisions/<int:pk>/', RevisionDetailView.as_view(), name='revision-detail'),
+
+    path(
+        'assignments/<int:assignment_id>/chat/improve/',
+        MessageImprovementView.as_view(),
+        name='message-improve'
+    ),
+    path(
+        'assignments/<int:assignment_id>/chat/messages/',
+        MessageImprovementView.as_view(),
+        name='chat-messages'
+    ),
+    path(
+        'assignments/<int:assignment_id>/chat/messages/<int:message_id>/',
+        MessageImprovementView.as_view(),
+        name='message-update'
+    )
 ]
