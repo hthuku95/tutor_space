@@ -1,0 +1,44 @@
+{
+    "family": "tutorspace-task",
+    "networkMode": "awsvpc",
+    "requiresCompatibilities": ["FARGATE"],
+    "cpu": "256",
+    "memory": "512",
+    "taskRoleArn": "arn:aws:iam::396913742200:role/ecsTaskExecutionRole",
+    "executionRoleArn": "arn:aws:iam::396913742200:role/ecsTaskExecutionRole",
+    "containerDefinitions": [
+        {
+            "name": "tutorspace-backend",
+            "image": "396913742200.dkr.ecr.eu-west-1.amazonaws.com/tutorspace-backend:latest",
+            "portMappings": [
+                {
+                    "containerPort": 8000,
+                    "protocol": "tcp"
+                }
+            ],
+            "environment": [
+                {
+                    "name": "DEBUG",
+                    "value": "0"
+                },
+                {
+                    "name": "ALLOWED_HOSTS",
+                    "value": "tutorspace-alb-161139016.eu-west-1.elb.amazonaws.com"
+                },
+                {
+                    "name": "DATABASE_URL",
+                    "value": "postgresql://tutorspace_admin:yiu077h966to3345o@tutorspace-db.cpo6ke40s1kx.eu-west-1.rds.amazonaws.com:5432/tutorspace_db"
+                }
+            ],
+            "logConfiguration": {
+                "logDriver": "awslogs",
+                "options": {
+                    "awslogs-group": "/ecs/tutorspace-task",
+                    "awslogs-region": "eu-west-1",
+                    "awslogs-stream-prefix": "ecs"
+                }
+            },
+            "essential": true
+        }
+    ]
+}

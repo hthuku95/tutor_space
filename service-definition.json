@@ -1,0 +1,27 @@
+{
+    "cluster": "tutorspace-cluster",
+    "serviceName": "tutorspace-service",
+    "taskDefinition": "tutorspace-task:1",
+    "desiredCount": 1,
+    "launchType": "FARGATE",
+    "networkConfiguration": {
+        "awsvpcConfiguration": {
+            "subnets": [
+                "subnet-0b93a619af7015f61",
+                "subnet-087b9086804886e58",
+                "subnet-002e215a95f9e8af4"
+            ],
+            "securityGroups": [
+                "sg-0e839c0e4df8f6f81"
+            ],
+            "assignPublicIp": "ENABLED"
+        }
+    },
+    "loadBalancers": [
+        {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:eu-west-1:396913742200:targetgroup/tutorspace-tg/795221176455e42b",
+            "containerName": "tutorspace-backend",
+            "containerPort": 8000
+        }
+    ]
+}
