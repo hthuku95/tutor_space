@@ -8,22 +8,24 @@ ENV PYTHONUNBUFFERED=1
 # Set work directory
 WORKDIR /app
 
-# Install system dependencies
+# Install system dependencies including Docker
 RUN apt-get update && apt-get install -y \
     build-essential \
     libpq-dev \
     netcat-traditional \
+    apt-transport-https \
+    ca-certificates \
+    curl \
+    gnupg \
+    lsb-release \
+    && curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg \
+    && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/debian $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null \
+    && apt-get update \
+    && apt-get install -y docker-ce docker-ce-cli containerd.io \
     && rm -rf /var/lib/apt/lists/*
 
-# Install core Python dependencies first
+# Install Python dependencies
 COPY requirements.txt .
-RUN pip install --no-cache-dir \
-    Django==5.1.1 \
-    dj-database-url==2.1.0 \
-    psycopg2-binary==2.9.10 \
-    python-dotenv==1.0.1
-
-# Install rest of the requirements
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy entrypoint script
